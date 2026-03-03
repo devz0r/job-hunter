@@ -1,0 +1,124 @@
+name: Daily Job Scrape
+
+on:
+  schedule:
+    # 12:00 UTC = 7:00 AM Eastern (8:00 AM during DST)
+    - cron: '0 12 * * *'
+  workflow_dispatch:  # Manual trigger button in GitHub UI
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "scrape"
+  cancel-in-progress: false
+
+jobs:
+  scrape-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout code + database from last run ──────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── 2. Set up Python ───────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── 3. Cache pip packages (~800MB) ─────────────────────────────
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-
+
+      # ── 4. Cache HuggingFace model (~90MB) ─────────────────────────
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: huggingface-sentence-transformers
+          restore-keys: huggingface-
+
+      # ── 5. Cache Playwright browsers (~150MB) ──────────────────────
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('requirements.txt') }}
+          restore-keys: playwright-
+
+      # ── 6. Install Python dependencies ─────────────────────────────
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 7. Install Playwright Chromium ─────────────────────────────
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      # ── 8. Create .env from GitHub Secrets ─────────────────────────
+      - name: Create .env file
+        env:
+          CANDIDATE_EMAIL: ${{ secrets.CANDIDATE_EMAIL }}
+          CANDIDATE_PHONE: ${{ secrets.CANDIDATE_PHONE }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_TO_EMAIL: ${{ secrets.ALERT_TO_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+        run: |
+          echo "CANDIDATE_EMAIL=${CANDIDATE_EMAIL}" > .env
+          echo "CANDIDATE_PHONE=${CANDIDATE_PHONE}" >> .env
+          echo "SMTP_SERVER=${SMTP_SERVER}" >> .env
+          echo "SMTP_PORT=${SMTP_PORT}" >> .env
+          echo "SMTP_USER=${SMTP_USER}" >> .env
+          echo "SMTP_PASSWORD=${SMTP_PASSWORD}" >> .env
+          echo "ALERT_TO_EMAIL=${ALERT_TO_EMAIL}" >> .env
+          echo "ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL}" >> .env
+          echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
+          echo "DASHBOARD_URL=${DASHBOARD_URL}" >> .env
+
+      # ── 9. Run the full pipeline ───────────────────────────────────
+      - name: Run job search pipeline
+        env:
+          CI: true
+        run: python main.py
+
+      # ── 10. Commit updated DB + dashboard back to repo ─────────────
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add job_hunter.db reports/dashboard.html reports/index.html
+          git diff --staged --quiet || git commit -m "Daily scrape: $(date -u +'%Y-%m-%d %H:%M') UTC"
+          git pull --rebase origin main
+          git push
+
+      # ── 11. Deploy dashboard to GitHub Pages ───────────────────────
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload dashboard to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: reports/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
