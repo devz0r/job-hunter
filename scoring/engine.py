@@ -417,13 +417,13 @@ def _score_location(job: Job) -> float:
     if any(w in remote_text for w in ["remote", "work from home"]):
         return 100.0
 
-    # "United States" typically means remote on LinkedIn
+    # "United States" — only score high if description confirms remote
     if location_lower.strip() in ["united states", "united states of america", "usa"]:
         if any(w in desc_lower for w in ["remote", "work from home", "fully remote",
                                           "remote-first", "distributed team",
                                           "work from anywhere", "telecommute"]):
             return 100.0
-        return 100.0  # Likely remote
+        return 60.0  # Ambiguous — might be any US city, not necessarily local
 
     if job.is_hybrid:
         return 100.0

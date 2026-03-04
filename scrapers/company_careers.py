@@ -1,10 +1,11 @@
 """
 Direct company career page scraper.
-Uses Workday and Greenhouse public APIs where available.
+Uses Workday, Greenhouse, and Lever public APIs where available.
 Falls back to HTML scraping for other ATS platforms.
 """
 import re
 import json
+import os
 import requests
 from typing import List, Optional
 from urllib.parse import quote_plus, urljoin
@@ -36,11 +37,53 @@ WORKDAY_ENDPOINTS = {
 }
 
 # ── Known Greenhouse API board slugs ─────────────────────────────────────
+# Charlotte-area companies
 GREENHOUSE_BOARDS = {
     "Red Ventures": "redventures",
     "Credit Karma": "creditkarma",
     "LendingTree": "lendingtree",
     "Lending Tree": "lendingtree",
+    "AvidXchange": "avidxchangeinc",
+}
+
+# National remote-friendly companies (Greenhouse API - all verified working)
+GREENHOUSE_NATIONAL = {
+    "Stripe": "stripe",
+    "HubSpot": "hubspot",
+    "GitLab": "gitlab",
+    "Datadog": "datadog",
+    "MongoDB": "mongodb",
+    "Cloudflare": "cloudflare",
+    "Twilio": "twilio",
+    "Figma": "figma",
+    "Airtable": "airtable",
+    "Asana": "asana",
+    "Okta": "okta",
+    "PagerDuty": "pagerduty",
+    "Elastic": "elastic",
+    "Gusto": "gusto",
+    "Brex": "brex",
+    "Chime": "chime",
+    "Robinhood": "robinhood",
+    "Duolingo": "duolingo",
+    "Squarespace": "squarespace",
+    "Toast": "toast",
+    "Grammarly": "grammarly",
+    "Calendly": "calendly",
+    "Dropbox": "dropbox",
+    "Samsara": "samsara",
+    "Scale AI": "scaleai",
+    "Fivetran": "fivetran",
+    "CockroachDB": "cockroachlabs",
+    "Amplitude": "amplitude",
+    "Remote.com": "remotecom",
+    "Lattice": "lattice",
+}
+
+# ── Known Lever API board slugs ──────────────────────────────────────────
+LEVER_BOARDS = {
+    "Plaid": "plaid",
+    "Spotify": "spotify",
 }
 
 
@@ -71,6 +114,7 @@ class CompanyCareersScraper(BaseScraper):
 
         all_jobs = []
         companies = self._company_data
+        is_ci = bool(os.environ.get("CI"))
 
         console.print(f"  [bold]Searching {len(companies)} company career pages...[/bold]")
 
@@ -92,6 +136,36 @@ class CompanyCareersScraper(BaseScraper):
             except Exception as e:
                 console.print(f"  [red]{name}[/red]: Error - {e}")
 
+        # ── National Greenhouse boards (remote-friendly tech companies) ──
+        console.print(f"  [bold]Searching {len(GREENHOUSE_NATIONAL)} national Greenhouse boards...[/bold]")
+        for company_name, board_slug in GREENHOUSE_NATIONAL.items():
+            # Skip in CI if we already have enough jobs (keep run times short)
+            if is_ci and len(all_jobs) > 800:
+                console.print(f"  [dim]Skipping remaining national boards (CI limit)[/dim]")
+                break
+            try:
+                jobs = self._search_greenhouse_api_by_slug(company_name, board_slug)
+                if jobs:
+                    console.print(
+                        f"  [green]{company_name}[/green]: {len(jobs)} relevant positions"
+                    )
+                    all_jobs.extend(jobs)
+            except Exception as e:
+                console.print(f"  [red]{company_name}[/red]: Error - {e}")
+
+        # ── Lever boards ─────────────────────────────────────────────────
+        console.print(f"  [bold]Searching {len(LEVER_BOARDS)} Lever boards...[/bold]")
+        for company_name, board_slug in LEVER_BOARDS.items():
+            try:
+                jobs = self._search_lever_api(company_name, board_slug)
+                if jobs:
+                    console.print(
+                        f"  [green]{company_name}[/green]: {len(jobs)} relevant positions"
+                    )
+                    all_jobs.extend(jobs)
+            except Exception as e:
+                console.print(f"  [red]{company_name}[/red]: Error - {e}")
+
         console.print(f"  [bold]Company careers total: {len(all_jobs)} jobs[/bold]")
         return all_jobs
 
@@ -102,9 +176,13 @@ class CompanyCareersScraper(BaseScraper):
         if company_name in WORKDAY_ENDPOINTS:
             return self._search_workday_api(company_name)
 
-        # Greenhouse API
+        # Greenhouse API (local boards)
         if company_name in GREENHOUSE_BOARDS:
             return self._search_greenhouse_api(company_name)
+
+        # Lever API
+        if company_name in LEVER_BOARDS:
+            return self._search_lever_api(company_name, LEVER_BOARDS[company_name])
 
         # Greenhouse URLs (try API discovery)
         if ats_platform == "greenhouse" or "greenhouse.io" in (careers_url or ""):
@@ -284,6 +362,131 @@ class CompanyCareersScraper(BaseScraper):
         except Exception:
             return None
 
+    def _search_greenhouse_api_by_slug(self, company_name: str,
+                                        board_slug: str) -> List[Job]:
+        """Search Greenhouse API by slug (for national boards not in GREENHOUSE_BOARDS)."""
+        api_url = f"https://boards-api.greenhouse.io/v1/boards/{board_slug}/jobs"
+
+        try:
+            resp = requests.get(api_url, timeout=15)
+            if resp.status_code != 200:
+                return []
+
+            data = resp.json()
+            jobs = []
+            for listing in data.get("jobs", []):
+                job = self._parse_greenhouse_job(listing, company_name)
+                if job and self._is_relevant(job.title):
+                    # For national companies, only keep remote or Charlotte-area jobs
+                    if self._is_location_relevant(job):
+                        jobs.append(job)
+
+            return jobs
+        except Exception:
+            return []
+
+    def _is_location_relevant(self, job: Job) -> bool:
+        """Check if a job's location is relevant (remote, hybrid, or Charlotte area)."""
+        loc = (job.location or "").lower()
+        desc = (job.description or "").lower()
+
+        # Remote jobs are always relevant
+        if job.is_remote or job.is_hybrid:
+            return True
+        if any(w in loc for w in ["remote", "anywhere", "distributed", "work from home"]):
+            return True
+
+        # Charlotte area
+        charlotte_keywords = [
+            "charlotte", "cornelius", "huntersville", "davidson",
+            "mooresville", "lake norman", "concord", "north carolina", ", nc",
+        ]
+        if any(w in loc for w in charlotte_keywords):
+            return True
+
+        # US-wide (might be remote)
+        if loc.strip() in ["united states", "usa", "us", ""]:
+            if any(w in desc for w in ["remote", "work from home", "distributed"]):
+                return True
+            # Empty location + national company → likely remote
+            if not loc.strip():
+                return True
+
+        return False
+
+    # ── Lever API ──────────────────────────────────────────────────────────
+
+    def _search_lever_api(self, company_name: str,
+                           board_slug: str) -> List[Job]:
+        """Search via Lever's public postings API."""
+        api_url = f"https://api.lever.co/v0/postings/{board_slug}?mode=json"
+
+        try:
+            resp = requests.get(api_url, timeout=15)
+            if resp.status_code != 200:
+                return []
+
+            data = resp.json()
+            jobs = []
+            for posting in data:
+                job = self._parse_lever_posting(posting, company_name)
+                if job and self._is_relevant(job.title):
+                    if self._is_location_relevant(job):
+                        jobs.append(job)
+
+            return jobs
+        except Exception:
+            return []
+
+    def _parse_lever_posting(self, posting: dict,
+                              company_name: str) -> Optional[Job]:
+        """Parse a Lever API job posting."""
+        try:
+            job = Job()
+            job.source = self.source_name
+            job.company = company_name
+            job.title = posting.get("text", "")
+            job.external_id = posting.get("id", "")
+            job.url = posting.get("hostedUrl", "")
+            job.apply_url = posting.get("applyUrl", "")
+
+            # Location from categories
+            categories = posting.get("categories", {})
+            job.location = categories.get("location", "")
+            team = categories.get("team", "")
+            commitment = categories.get("commitment", "")
+
+            # Description from lists
+            desc_parts = []
+            for section in posting.get("lists", []):
+                content = section.get("content", "")
+                if content:
+                    soup = BeautifulSoup(content, "lxml")
+                    desc_parts.append(soup.get_text(separator="\n", strip=True))
+            desc_text = posting.get("descriptionPlain", "")
+            if desc_text:
+                desc_parts.insert(0, desc_text)
+            if desc_parts:
+                job.description = "\n\n".join(desc_parts)
+
+            # Remote detection
+            loc_lower = (job.location or "").lower()
+            if "remote" in loc_lower:
+                job.is_remote = True
+            if "hybrid" in loc_lower:
+                job.is_hybrid = True
+
+            # Posted date
+            created = posting.get("createdAt")
+            if created:
+                from datetime import datetime
+                dt = datetime.fromtimestamp(created / 1000)
+                job.posted_date = dt.strftime("%Y-%m-%d")
+
+            return job if job.title else None
+        except Exception:
+            return None
+
     # ── Generic scraping (fallback) ──────────────────────────────────────
 
     def _search_generic(self, company_name: str, careers_url: str) -> List[Job]:
@@ -345,29 +548,70 @@ class CompanyCareersScraper(BaseScraper):
         return jobs
 
     def _is_relevant(self, title: str) -> bool:
-        """Check if a job title is relevant for Cynthia."""
+        """Check if a job title is relevant for Cynthia.
+
+        She's a Program/Project/Operations Manager, NOT an engineer,
+        designer, data scientist, or sales person. Titles must signal
+        management/leadership in operations, programs, or projects.
+        """
         title_lower = title.lower()
 
-        relevant_keywords = [
-            "manager", "director", "lead", "chief of staff",
-            "program", "project", "operations", "change management",
-            "implementation", "transformation", "vendor",
-            "strategy", "pmo", "delivery", "engagement",
-            "supply chain", "logistics", "process",
-            "product", "platform", "business operations",
-        ]
-
+        # ── Hard exclusions — these are never relevant ──────────────────
         exclusions = [
-            "software engineer", "developer", "data scientist",
-            "designer", "nurse", "physician", "accountant",
-            "sales rep", "retail associate", "store manager",
-            "customer service rep", "cashier", "warehouse",
-            "mechanic", "technician", "electrician", "plumber",
+            "software engineer", "developer", "data scientist", "data engineer",
+            "machine learning", "ml engineer", "ai engineer", "ai researcher",
+            "designer", "ux ", "ui ", "frontend", "backend", "full stack",
+            "fullstack", "devops", "sre ", "site reliability",
+            "nurse", "physician", "therapist", "pharmacist", "clinical",
+            "accountant", "auditor", "tax ", "bookkeeper",
+            "sales rep", "account executive", "sales engineer", "sales development",
+            "retail associate", "store manager", "cashier", "warehouse",
+            "customer service rep", "customer support",
+            "mechanic", "technician", "electrician", "plumber", "welder",
             "intern", "internship", "entry level", "junior",
             "part-time", "part time", "seasonal", "temporary",
+            "recruiter", "talent acquisition", "sourcing specialist",
+            "marketing manager", "brand manager", "content manager",
+            "creative director", "art director", "copywriter",
+            "engineering manager", "eng manager", "engineer,",
+            "security engineer", "network engineer", "cloud engineer",
+            "infrastructure engineer", "systems engineer",
+            "solutions architect", "technical architect",
+            "research scientist", "applied scientist",
         ]
 
         if any(exc in title_lower for exc in exclusions):
             return False
 
-        return any(kw in title_lower for kw in relevant_keywords)
+        # ── Strong matches — compound keywords that are clearly relevant ─
+        strong_matches = [
+            "program manager", "project manager", "operations manager",
+            "change management", "implementation manager", "transformation",
+            "supply chain manager", "supply chain director",
+            "logistics manager", "logistics director",
+            "pmo manager", "pmo director", "pmo lead",
+            "delivery manager", "engagement manager", "release manager",
+            "business operations", "director of operations",
+            "director of program", "director of project",
+            "vendor management", "procurement manager",
+            "chief of staff", "strategy and operations",
+            "process improvement", "continuous improvement",
+            "digital transformation",
+        ]
+        if any(kw in title_lower for kw in strong_matches):
+            return True
+
+        # ── Moderate matches — need "manager" or "director" or "lead" ────
+        role_signals = ["manager", "director", "lead", "head of", "vp "]
+        has_role = any(sig in title_lower for sig in role_signals)
+
+        domain_signals = [
+            "program", "project", "operations", "process",
+            "delivery", "engagement", "implementation",
+            "vendor", "supply chain", "logistics",
+            "strategy", "pmo", "portfolio",
+            "product", "platform", "business",
+        ]
+        has_domain = any(sig in title_lower for sig in domain_signals)
+
+        return has_role and has_domain

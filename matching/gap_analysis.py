@@ -277,23 +277,42 @@ def compute_qualification_score(gap_result: dict) -> float:
     Higher score = fewer/lighter gaps = more qualified.
 
     Context weighting:
-    - "required" gaps:  full penalty (weight × 25 pts)
+    - "required" gaps:  full penalty (weight × 30 pts)
     - "preferred" gaps: already have reduced weight from analyze_gaps
-    - "unknown" gaps:   halved penalty (many are casual mentions, not real requirements)
+    - "unknown" gaps:   80% penalty (most skills mentioned are genuinely needed)
     - "implicit" gaps:  excluded (she likely has these skills)
+
+    Hard skill cliff: If 3+ hard skills she lacks are mentioned, apply
+    a multiplicative penalty — the job fundamentally requires a different
+    skill set (e.g., data engineering, software development).
     """
     penalty = 0
+    hard_skill_gap_count = 0
+
     for g in gap_result["gaps"]:
         if g["category"] == "implicit":
             continue
-        base_penalty = g["weight"] * 25
+        # Increased penalty multiplier: weight × 30 (was 25)
+        base_penalty = g["weight"] * 30
         if g["context"] == "unknown":
-            base_penalty *= 0.5  # Unknown context = half penalty
+            base_penalty *= 0.8  # Unknown = 80% penalty (was 50%)
         penalty += base_penalty
 
-    # Bonus for strengths (capped at +10)
-    bonus = min(10, len(gap_result.get("strengths", [])) * 2)
-    return round(max(0, min(100, 100 - penalty + bonus)), 1)
+        # Count hard skill gaps for cliff detection
+        if g["category"] == "skill" and g["weight"] >= 0.4:
+            hard_skill_gap_count += 1
+
+    # Bonus for strengths (capped at +8, was +10)
+    bonus = min(8, len(gap_result.get("strengths", [])) * 2)
+    score = max(0, min(100, 100 - penalty + bonus))
+
+    # Hard skill cliff: 3+ missing hard skills = fundamentally different role
+    if hard_skill_gap_count >= 4:
+        score = min(score, 30)  # Cap at 30 — this job requires a different skill set
+    elif hard_skill_gap_count >= 3:
+        score = min(score, 45)  # Cap at 45 — significant mismatch
+
+    return round(score, 1)
 
 
 def _classify_requirement_context(text: str, keyword: str) -> str:
