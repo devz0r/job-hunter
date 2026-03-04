@@ -138,6 +138,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: reports/
+          overwrite: true
 
       - name: Redeploy to GitHub Pages
         uses: actions/deploy-pages@v4
