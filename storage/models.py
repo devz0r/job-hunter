@@ -119,7 +119,14 @@ class Job:
         if self.estimated_salary:
             return f"~${self.estimated_salary:,.0f} (est.)"
         if self.salary_text:
-            return self.salary_text
+            # Clean up raw text like "Base pay range$90,000/yr - $150,000/yr"
+            import re
+            cleaned = self.salary_text.strip()
+            # Remove "Base pay range" prefix
+            cleaned = re.sub(r'^[Bb]ase\s*(?:pay\s*)?(?:range\s*)?', '', cleaned)
+            # Ensure it starts with $ for consistent sorting
+            cleaned = cleaned.strip()
+            return cleaned if cleaned else "Not listed"
         return "Not listed"
 
 

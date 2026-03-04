@@ -115,17 +115,22 @@ class JobEnricher(BaseScraper):
 
     def extract_salaries_from_stored_descriptions(self) -> int:
         """
-        Scan all stored descriptions for salary data WITHOUT refetching URLs.
-        This catches salaries that were missed because the enrichment URL fetch
-        failed or the regex was too narrow at the time of enrichment.
+        Scan all stored descriptions AND salary_text for salary data
+        WITHOUT refetching URLs. This catches salaries missed because:
+        - The enrichment URL fetch failed
+        - The regex was too narrow at the time of enrichment
+        - salary_text was set but salary_min/max weren't parsed
         """
         conn = db.get_connection()
         try:
+            # Get jobs with descriptions but no parsed salary
             rows = conn.execute(
-                """SELECT id, description FROM jobs
-                   WHERE description IS NOT NULL AND description != ''
-                   AND salary_min IS NULL
-                   AND (salary_text IS NULL OR salary_text = '')"""
+                """SELECT id, description, salary_text FROM jobs
+                   WHERE salary_min IS NULL
+                   AND (
+                       (description IS NOT NULL AND description != '')
+                       OR (salary_text IS NOT NULL AND salary_text != '')
+                   )"""
             ).fetchall()
         finally:
             conn.close()
@@ -134,29 +139,35 @@ class JobEnricher(BaseScraper):
             console.print("[dim]No jobs with descriptions missing salary.[/dim]")
             return 0
 
-        console.print(f"[bold]Scanning {len(rows)} stored descriptions for salary...[/bold]")
+        console.print(f"[bold]Scanning {len(rows)} jobs for salary data...[/bold]")
         found = 0
 
         for row in rows:
-            job_id, description = row[0], row[1]
+            job_id, description, salary_text = row[0], row[1] or "", row[2] or ""
             result = {}
-            self._extract_salary_from_text(description, result)
+
+            # Try salary_text first (e.g., "Base pay range$90,000/yr - $150,000/yr")
+            if salary_text:
+                self._extract_salary_from_text(salary_text, result)
+
+            # If that didn't work, try the full description
+            if not result.get("salary_min") and description:
+                self._extract_salary_from_text(description, result)
 
             if result.get("salary_min"):
                 conn = db.get_connection()
                 try:
                     conn.execute(
-                        """UPDATE jobs SET salary_min = ?, salary_max = ?,
-                           salary_text = ? WHERE id = ?""",
-                        (result["salary_min"], result.get("salary_max"),
-                         result.get("salary_text", ""), job_id)
+                        """UPDATE jobs SET salary_min = ?, salary_max = ?
+                           WHERE id = ?""",
+                        (result["salary_min"], result.get("salary_max"), job_id)
                     )
                     conn.commit()
                     found += 1
                 finally:
                     conn.close()
 
-        console.print(f"[green]Extracted salary from {found}/{len(rows)} descriptions[/green]")
+        console.print(f"[green]Extracted salary from {found}/{len(rows)} jobs[/green]")
         return found
 
     def _fetch_data(self, url: str, source: str) -> Optional[Dict]:
@@ -305,11 +316,13 @@ class JobEnricher(BaseScraper):
           $70,000.00 to $100,000.00   (decimals + 'to')
         """
         # Pattern supports: optional $ on second number, unformatted large numbers,
-        # comma-formatted numbers, decimals, K suffix, hourly rates
+        # comma-formatted numbers, decimals, K suffix, hourly rates,
+        # unit suffixes like /yr, /hr between number and separator
         pattern = (
-            r'\$\s*(\d[\d,]*(?:\.\d+)?)\s*[kK]?\s*'        # First number: $NNN,NNN.NN
-            r'(?:[-–—~]|\s+to\s+)\s*'                       # Separator: dash, en-dash, em-dash, ~, or "to"
-            r'\$?\s*(\d[\d,]*(?:\.\d+)?)\s*[kK]?'           # Second number: optional $
+            r'\$\s*(\d[\d,]*(?:\.\d+)?)\s*[kK]?'            # First number: $NNN,NNN.NN
+            r'(?:/(?:yr|hr|hour|year|mo))?\s*'               # Optional unit suffix: /yr, /hr
+            r'(?:[-–—~]|\s+to\s+)\s*'                        # Separator: dash, en-dash, em-dash, ~, or "to"
+            r'\$?\s*(\d[\d,]*(?:\.\d+)?)\s*[kK]?'            # Second number: optional $
         )
         match = re.search(pattern, text)
         if match:
@@ -318,13 +331,18 @@ class JobEnricher(BaseScraper):
             low = float(low_str)
             high = float(high_str)
 
-            # Detect hourly rates from surrounding context
+            # Detect hourly rates from match text and surrounding context
+            matched_full = match.group(0).lower()
             context_after = text[match.end():match.end()+30].lower()
             context_before = text[max(0,match.start()-30):match.start()].lower()
-            is_hourly = any(kw in context_after or kw in context_before
-                           for kw in ['/hr', 'per hour', 'hourly', '/hour'])
-            # Also hourly if both values are small decimals (< $500)
-            if low < 500 and high < 500:
+            full_context = context_before + matched_full + context_after
+
+            # /yr or /year or "per year" means annual — NOT hourly
+            is_annual = any(kw in full_context for kw in ['/yr', '/year', 'per year', 'annual'])
+            is_hourly = any(kw in full_context for kw in ['/hr', 'per hour', 'hourly', '/hour'])
+
+            # Small values (< $500) are hourly UNLESS explicitly marked annual
+            if low < 500 and high < 500 and not is_annual:
                 is_hourly = True
 
             if is_hourly:
