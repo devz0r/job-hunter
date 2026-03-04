@@ -16,8 +16,8 @@ REPORT_DIR = PROJECT_ROOT / "reports"
 COVER_LETTERS_DIR = PROJECT_ROOT / "cover_letters"
 
 # ── Location ───────────────────────────────────────────────────────────────
-HOME_ADDRESS = "Cornelius, NC 28031"
-HOME_COORDS = (35.4868, -80.8601)  # Cornelius, NC
+HOME_ADDRESS = os.getenv("HOME_ADDRESS", "Charlotte, NC")
+HOME_COORDS = tuple(float(x) for x in os.getenv("HOME_COORDS", "35.4868,-80.8601").split(","))
 MAX_COMMUTE_MILES = 50
 RELOCATION_SALARY_THRESHOLD = 200_000  # Willing to relocate for $200K+
 
@@ -144,7 +144,7 @@ SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")  # Gmail app password
-ALERT_TO_EMAIL = os.getenv("ALERT_TO_EMAIL", "cynthiafrancis814@gmail.com")
+ALERT_TO_EMAIL = os.getenv("ALERT_TO_EMAIL", "")
 ALERT_FROM_EMAIL = os.getenv("ALERT_FROM_EMAIL", SMTP_USER)
 
 # ── Dashboard URL (set by GitHub Pages after deployment) ───────────────────
