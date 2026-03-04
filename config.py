@@ -16,8 +16,9 @@ REPORT_DIR = PROJECT_ROOT / "reports"
 COVER_LETTERS_DIR = PROJECT_ROOT / "cover_letters"
 
 # ── Location ───────────────────────────────────────────────────────────────
-HOME_ADDRESS = os.getenv("HOME_ADDRESS", "Charlotte, NC")
-HOME_COORDS = tuple(float(x) for x in os.getenv("HOME_COORDS", "35.4868,-80.8601").split(","))
+HOME_ADDRESS = os.getenv("HOME_ADDRESS", "") or "Charlotte, NC"
+_coords_str = os.getenv("HOME_COORDS", "") or "35.4868,-80.8601"
+HOME_COORDS = tuple(float(x) for x in _coords_str.split(","))
 MAX_COMMUTE_MILES = 50
 RELOCATION_SALARY_THRESHOLD = 200_000  # Willing to relocate for $200K+
 
@@ -141,7 +142,7 @@ DEDUP_SIMILARITY_THRESHOLD = 0.85  # 85% title+company similarity = same job
 
 # ── Alerts ─────────────────────────────────────────────────────────────────
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_PORT = int(os.getenv("SMTP_PORT", "") or "587")
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")  # Gmail app password
 ALERT_TO_EMAIL = os.getenv("ALERT_TO_EMAIL", "")
