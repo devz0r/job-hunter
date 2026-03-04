@@ -177,10 +177,14 @@ class BaseScraper(ABC):
         titles = config.TARGET_JOB_TITLES
         locations = config.SEARCH_LOCATIONS
 
-        # Use a subset of searches to avoid excessive requests
-        # Prioritize the most important title+location combos
-        priority_titles = titles[:15]  # Top 15 most relevant titles
-        priority_locations = locations[:5]  # Top 5 locations
+        # In CI, use fewer search combos to stay under timeout
+        import os
+        is_ci = bool(os.environ.get("CI"))
+        max_titles = 8 if is_ci else 15
+        max_locations = 3 if is_ci else 5
+
+        priority_titles = titles[:max_titles]
+        priority_locations = locations[:max_locations]
 
         total = len(priority_titles) * len(priority_locations)
         console.print(f"  [dim]{self.source_name}: Running {total} searches[/dim]")

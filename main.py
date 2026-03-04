@@ -424,38 +424,48 @@ def _run_on_schedule():
 
 
 def _get_all_scrapers():
-    """Get all configured scrapers."""
+    """Get all configured scrapers.
+    In CI, skip scrapers known to be blocked by Cloudflare (Google Jobs,
+    Indeed, Glassdoor, ZipRecruiter) — they return 0 results and waste time.
+    """
+    is_ci = bool(os.environ.get("CI"))
     scrapers = []
 
-    try:
-        from scrapers.google_jobs import GoogleJobsScraper
-        scrapers.append(("google_jobs", GoogleJobsScraper()))
-    except Exception as e:
-        console.print(f"[yellow]Google Jobs scraper unavailable: {e}[/yellow]")
+    # Cloudflare-blocked scrapers — skip in CI
+    if not is_ci:
+        try:
+            from scrapers.google_jobs import GoogleJobsScraper
+            scrapers.append(("google_jobs", GoogleJobsScraper()))
+        except Exception as e:
+            console.print(f"[yellow]Google Jobs scraper unavailable: {e}[/yellow]")
 
-    try:
-        from scrapers.indeed import IndeedScraper
-        scrapers.append(("indeed", IndeedScraper()))
-    except Exception as e:
-        console.print(f"[yellow]Indeed scraper unavailable: {e}[/yellow]")
+        try:
+            from scrapers.indeed import IndeedScraper
+            scrapers.append(("indeed", IndeedScraper()))
+        except Exception as e:
+            console.print(f"[yellow]Indeed scraper unavailable: {e}[/yellow]")
 
+        try:
+            from scrapers.glassdoor import GlassdoorScraper
+            scrapers.append(("glassdoor", GlassdoorScraper()))
+        except Exception as e:
+            console.print(f"[yellow]Glassdoor scraper unavailable: {e}[/yellow]")
+
+        try:
+            from scrapers.ziprecruiter import ZipRecruiterScraper
+            scrapers.append(("ziprecruiter", ZipRecruiterScraper()))
+        except Exception as e:
+            console.print(f"[yellow]ZipRecruiter scraper unavailable: {e}[/yellow]")
+    else:
+        console.print("[dim]CI mode: Skipping Cloudflare-blocked scrapers "
+                      "(Google, Indeed, Glassdoor, ZipRecruiter)[/dim]")
+
+    # These work everywhere (HTTP APIs, no Cloudflare)
     try:
         from scrapers.linkedin import LinkedInScraper
         scrapers.append(("linkedin", LinkedInScraper()))
     except Exception as e:
         console.print(f"[yellow]LinkedIn scraper unavailable: {e}[/yellow]")
-
-    try:
-        from scrapers.glassdoor import GlassdoorScraper
-        scrapers.append(("glassdoor", GlassdoorScraper()))
-    except Exception as e:
-        console.print(f"[yellow]Glassdoor scraper unavailable: {e}[/yellow]")
-
-    try:
-        from scrapers.ziprecruiter import ZipRecruiterScraper
-        scrapers.append(("ziprecruiter", ZipRecruiterScraper()))
-    except Exception as e:
-        console.print(f"[yellow]ZipRecruiter scraper unavailable: {e}[/yellow]")
 
     try:
         from scrapers.multi_board import MultiboardScraper
