@@ -230,12 +230,15 @@ def _search_single_source(source: str):
 
 
 def _enrich_jobs():
-    """Fetch full descriptions for jobs that don't have them."""
+    """Fetch full descriptions for jobs that don't have them,
+    then scan all stored descriptions for salary data."""
     from scrapers.enrich import JobEnricher
     enricher = JobEnricher()
     enriched = enricher.enrich_jobs(limit=300)
     if enriched > 0:
         console.print(f"[green]Enriched {enriched} jobs with full descriptions.[/green]")
+    # Always scan stored descriptions for salary (catches what URL-fetch missed)
+    enricher.extract_salaries_from_stored_descriptions()
 
 
 def _rescore_all():

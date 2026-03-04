@@ -113,6 +113,52 @@ class JobEnricher(BaseScraper):
         )
         return enriched
 
+    def extract_salaries_from_stored_descriptions(self) -> int:
+        """
+        Scan all stored descriptions for salary data WITHOUT refetching URLs.
+        This catches salaries that were missed because the enrichment URL fetch
+        failed or the regex was too narrow at the time of enrichment.
+        """
+        conn = db.get_connection()
+        try:
+            rows = conn.execute(
+                """SELECT id, description FROM jobs
+                   WHERE description IS NOT NULL AND description != ''
+                   AND salary_min IS NULL
+                   AND (salary_text IS NULL OR salary_text = '')"""
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            console.print("[dim]No jobs with descriptions missing salary.[/dim]")
+            return 0
+
+        console.print(f"[bold]Scanning {len(rows)} stored descriptions for salary...[/bold]")
+        found = 0
+
+        for row in rows:
+            job_id, description = row[0], row[1]
+            result = {}
+            self._extract_salary_from_text(description, result)
+
+            if result.get("salary_min"):
+                conn = db.get_connection()
+                try:
+                    conn.execute(
+                        """UPDATE jobs SET salary_min = ?, salary_max = ?,
+                           salary_text = ? WHERE id = ?""",
+                        (result["salary_min"], result.get("salary_max"),
+                         result.get("salary_text", ""), job_id)
+                    )
+                    conn.commit()
+                    found += 1
+                finally:
+                    conn.close()
+
+        console.print(f"[green]Extracted salary from {found}/{len(rows)} descriptions[/green]")
+        return found
+
     def _fetch_data(self, url: str, source: str) -> Optional[Dict]:
         """Fetch description + salary from a job URL."""
         if not url:
@@ -248,12 +294,22 @@ class JobEnricher(BaseScraper):
             result["salary_max"] = high
 
     def _extract_salary_from_text(self, text: str, result: Dict):
-        """Extract salary range from description body text."""
-        # Pattern: $120,000 - $150,000 or $120K-$150K
+        """Extract salary range from description body text.
+
+        Handles many real-world formats:
+          $90,000 - $150,000          (comma-formatted)
+          $90000 - $150000 USD        (unformatted)
+          $60.00 - 64.54/hr           (hourly, missing $ on second number)
+          $120K - $150K               (K shorthand)
+          $95,000 to $115,000         ('to' separator)
+          $70,000.00 to $100,000.00   (decimals + 'to')
+        """
+        # Pattern supports: optional $ on second number, unformatted large numbers,
+        # comma-formatted numbers, decimals, K suffix, hourly rates
         pattern = (
-            r'\$\s*(\d{2,3}(?:,\d{3})*(?:\.\d+)?)\s*[kK]?\s*'
-            r'[-–to/]+\s*'
-            r'\$\s*(\d{2,3}(?:,\d{3})*(?:\.\d+)?)\s*[kK]?'
+            r'\$\s*(\d[\d,]*(?:\.\d+)?)\s*[kK]?\s*'        # First number: $NNN,NNN.NN
+            r'(?:[-–—~]|\s+to\s+)\s*'                       # Separator: dash, en-dash, em-dash, ~, or "to"
+            r'\$?\s*(\d[\d,]*(?:\.\d+)?)\s*[kK]?'           # Second number: optional $
         )
         match = re.search(pattern, text)
         if match:
@@ -261,11 +317,33 @@ class JobEnricher(BaseScraper):
             high_str = match.group(2).replace(',', '')
             low = float(low_str)
             high = float(high_str)
-            if low < 1000:
-                low *= 1000
-            if high < 1000:
-                high *= 1000
-            # Sanity check: must be reasonable salary values
+
+            # Detect hourly rates from surrounding context
+            context_after = text[match.end():match.end()+30].lower()
+            context_before = text[max(0,match.start()-30):match.start()].lower()
+            is_hourly = any(kw in context_after or kw in context_before
+                           for kw in ['/hr', 'per hour', 'hourly', '/hour'])
+            # Also hourly if both values are small decimals (< $500)
+            if low < 500 and high < 500:
+                is_hourly = True
+
+            if is_hourly:
+                low *= 2080   # 40 hrs/week × 52 weeks
+                high *= 2080
+
+            # K suffix handling (e.g., $120K)
+            matched_text = match.group(0).lower()
+            if 'k' in matched_text:
+                if low < 1000:
+                    low *= 1000
+                if high < 1000:
+                    high *= 1000
+
+            # Ensure low < high
+            if low > high:
+                low, high = high, low
+
+            # Sanity check: must be reasonable annual salary values
             if 20000 <= low <= 500000 and 20000 <= high <= 1000000:
                 result["salary_min"] = low
                 result["salary_max"] = high
