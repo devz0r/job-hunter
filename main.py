@@ -234,7 +234,9 @@ def _enrich_jobs():
     then scan all stored descriptions for salary data."""
     from scrapers.enrich import JobEnricher
     enricher = JobEnricher()
-    enriched = enricher.enrich_jobs(limit=300)
+    # CI has limited time; local can afford more
+    limit = 50 if os.environ.get("CI") else 300
+    enriched = enricher.enrich_jobs(limit=limit)
     if enriched > 0:
         console.print(f"[green]Enriched {enriched} jobs with full descriptions.[/green]")
     # Always scan stored descriptions for salary (catches what URL-fetch missed)
